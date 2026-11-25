@@ -556,7 +556,7 @@ class Engine:
             os.makedirs(directory, exist_ok=True)
             path = os.path.join(directory, '解压失败报告.txt')
             with open(path, 'w', encoding='utf-8-sig') as f:
-                f.write('碧蓝解压 · 解压失败报告\n')
+                f.write('大肥鱼解压 · 解压失败报告\n')
                 f.write('生成时间：' + time.strftime('%Y-%m-%d %H:%M:%S') + '\n')
                 f.write(f'失败数量：{len(items)}\n')
                 f.write('=' * 58 + '\n\n')

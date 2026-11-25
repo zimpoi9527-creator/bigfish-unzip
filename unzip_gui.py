@@ -18,8 +18,8 @@ try:
 except Exception:
     DND_OK = False
 
-APP_VERSION = "1.2"
-APP_TITLE = f"碧蓝解压 v{APP_VERSION} · 多层伪装包一键解压"
+APP_VERSION = "1.2.1"
+APP_TITLE = f"大肥鱼解压 v{APP_VERSION} · 多层伪装包一键解压"
 
 # 布局（和 make_assets.py 的 layout.json 保持一致）
 W, H = 1040, 620
@@ -68,11 +68,10 @@ def enable_dpi_awareness():
             import ctypes
             ok = False
             try:
-                # PER_MONITOR_AWARE_V2，注意必须声明 argtypes，否则 64 位句柄会被截断
-                fn = ctypes.windll.user32.SetProcessDpiAwarenessContext
-                fn.argtypes = [ctypes.c_void_p]
-                fn.restype = ctypes.c_bool
-                ok = bool(fn(ctypes.c_void_p(-4)))
+                # 用「系统级 DPI 感知」(1)：跨不同缩放的显示器拖动时，
+                # 窗口尺寸保持不变（系统只做位图缩放），不会出现拖一下就变小。
+                ctypes.windll.shcore.SetProcessDpiAwareness(1)
+                ok = True
             except Exception:
                 ok = False
             if not ok:
@@ -270,6 +269,7 @@ class App:
         self.cancel_event = threading.Event()
         self.running = False
         self.pending = []
+        self.scale = SCALE
         self._hover = False
         self._closing = False
         self._seq = 0
@@ -291,6 +291,85 @@ class App:
                x1, y2, x1, y2 - r, x1, y1 + r, x1, y1]
         return self.canvas.create_polygon(pts, smooth=True, **kw)
 
+
+    def _current_scale(self):
+        """取当前窗口所在显示器的缩放系数。"""
+        try:
+            import ctypes
+            hwnd = int(self.root.wm_frame(), 16)
+            dpi = ctypes.windll.user32.GetDpiForWindow(hwnd)
+            if dpi and dpi > 0:
+                return max(1.0, min(3.0, round(dpi / 96.0 * 4) / 4))
+        except Exception:
+            pass
+        return self.scale
+
+    def _lock_window_size(self, event=None):
+        """窗口尺寸/DPI 变化时：跨屏则按新 DPI 重建界面，否则把尺寸拉回设计值。"""
+        if event is not None and getattr(event, 'widget', None) is not self.root:
+            return
+        if getattr(self, '_resizing', False):
+            return
+        tw, th = int(W * self.scale), int(H * self.scale)
+        try:
+            cw, ch = self.root.winfo_width(), self.root.winfo_height()
+        except Exception:
+            return
+        if abs(cw - tw) <= 2 and abs(ch - th) <= 2:
+            return
+        # 宽高按同一比例变化 => 跨屏 DPI 切换（系统按新 DPI 重排了窗口）
+        kx, ky = cw / tw, ch / th
+        if abs(kx - 1) > 0.04 and abs(kx - ky) < 0.06 and 0.5 < kx < 3.0:
+            new_scale = round(self.scale * kx * 4) / 4
+            if abs(new_scale - self.scale) > 0.01 and 1.0 <= new_scale <= 3.0:
+                self._resizing = True
+                self.root.after_idle(lambda sc=new_scale: self._rebuild_for_dpi(sc))
+                return
+        # 其余情况：把尺寸拉回设计值（系统吸附等）
+        self._resizing = True
+        try:
+            self.root.geometry(f"{tw}x{th}")
+        except Exception:
+            pass
+        self.root.after(150, self._reset_resize_flag)
+
+    def _reset_resize_flag(self):
+        self._resizing = False
+
+    def _rebuild_for_dpi(self, new_scale):
+        """按新的 DPI 重建整个界面（保留日志/改名记录/输入内容）。"""
+        global SCALE
+        try:
+            st = dict(log=list(self.log_lines), ren=list(self.rename_rows),
+                      pending=list(self.pending),
+                      pwd=self.password_var.get(), out=self.outdir_var.get(),
+                      uselib=self.use_lib.get(), nested=self.nested.get(),
+                      sep=self.sep_folder.get(), delsrc=self.del_src.get())
+            SCALE = new_scale
+            self.scale = new_scale
+            self.canvas.destroy()
+            self._build_ui()
+            self.log_lines = st['log']
+            self.rename_rows = st['ren']
+            self.pending = st['pending']
+            self.password_var.set(st['pwd'])
+            self.outdir_var.set(st['out'])
+            self.use_lib.set(st['uselib'])
+            self.nested.set(st['nested'])
+            self.sep_folder.set(st['sep'])
+            self.del_src.set(st['delsrc'])
+            for tag, enabled in list(self._buttons.items()):
+                pass
+            self._render_log()
+            self._render_renames()
+            self._queue_hint()
+            if self.rename_rows:
+                self.canvas.itemconfigure(self.rename_count,
+                                          text=f"已识别 {len(self.rename_rows)} 项")
+        except Exception:
+            pass
+        finally:
+            self._resizing = False
 
     def _load_wallpaper(self):
         """把壁纸按当前 DPI 缩放到物理像素尺寸，保证清晰。"""
@@ -360,6 +439,9 @@ class App:
         self._draw_left_panel()
         self._draw_right_panel()
         self._bind_dnd()
+
+        self._resizing = False
+        self.root.bind("<Configure>", self._lock_window_size)
 
         if not self.seven:
             messagebox.showerror("缺少 7-Zip", "没有找到 7z.exe，请确认程序目录下有 7z 文件夹。")
@@ -716,6 +798,9 @@ class App:
     def start(self):
         if self.running or not self.pending:
             return
+        self._resizing = False
+        self.root.bind("<Configure>", self._lock_window_size)
+
         if not self.seven:
             messagebox.showerror("缺少 7-Zip", "没有找到 7z.exe，请确认 7z 文件夹存在。")
             return
