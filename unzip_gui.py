@@ -18,7 +18,7 @@ try:
 except Exception:
     DND_OK = False
 
-APP_VERSION = "1.2.1"
+APP_VERSION = "1.2.2"
 APP_TITLE = f"大肥鱼解压 v{APP_VERSION} · 多层伪装包一键解压"
 
 # 布局（和 make_assets.py 的 layout.json 保持一致）

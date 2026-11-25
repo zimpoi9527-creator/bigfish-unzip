@@ -439,6 +439,81 @@ def summarize_7z_output(raw, max_lines=3, max_len=300):
     text = " | ".join(keep[-max_lines:])
     return text[:max_len]
 
+
+# --------------------------------------------------------------------------
+# 伪装包深扫描：7-Zip 只探测文件开头有限范围，视频/图片伪装包常把压缩数据
+# 藏在后面（甚至几 GB 处）。这里流式扫描整个文件，找到签名后把尾巴截出来再解。
+# --------------------------------------------------------------------------
+ARCHIVE_SIGNATURES = [
+    (b'PK\x03\x04', 'zip'),
+    (b'7z\xbc\xaf\x27\x1c', '7z'),
+    (b'Rar!\x1a\x07\x01\x00', 'rar5'),
+    (b'Rar!\x1a\x07\x00', 'rar4'),
+    (b'BZh', 'bzip2'),
+    (b'\x1f\x8b\x08', 'gzip'),
+    (b'\xfd7zXZ\x00', 'xz'),
+    (b'\x28\xb5\x2f\xfd', 'zstd'),
+]
+
+
+STRONG_KINDS = {'zip', '7z', 'rar4', 'rar5'}
+
+
+def find_embedded_archive(path, chunk_size=4 * 1024 * 1024):
+    """在文件里流式查找压缩包签名，返回 (offset, kind) 或 None。
+
+    offset > 0 才返回（0 处说明 7-Zip 本来就能识别）。
+    """
+    try:
+        size = os.path.getsize(path)
+    except OSError:
+        return None
+    if size < 64:
+        return None
+    overlap = 32
+    try:
+        with open(path, 'rb') as f:
+            pos = 0
+            tail = b''
+            while True:
+                data = f.read(chunk_size)
+                if not data:
+                    break
+                buf = tail + data
+                base = pos - len(tail)
+                for sig, kind in ARCHIVE_SIGNATURES:
+                    if kind not in STRONG_KINDS:
+                        continue    # 短魔数在随机数据里误命中率太高
+                    idx = buf.find(sig)
+                    while idx >= 0:
+                        off = base + idx
+                        if off > 0:
+                            return off, kind
+                        idx = buf.find(sig, idx + 1)
+                tail = buf[-overlap:]
+                pos += len(data)
+    except OSError:
+        return None
+    return None
+
+
+def carve_from(path, offset, dest):
+    """把 path 从 offset 开始的内容写到 dest，返回写入字节数。"""
+    written = 0
+    try:
+        with open(path, 'rb') as f, open(dest, 'wb') as o:
+            f.seek(offset)
+            while True:
+                buf = f.read(4 * 1024 * 1024)
+                if not buf:
+                    break
+                o.write(buf)
+                written += len(buf)
+    except OSError:
+        return -1
+    return written
+
+
 # --------------------------------------------------------------------------
 # 回调基类
 # --------------------------------------------------------------------------
@@ -578,10 +653,12 @@ class Engine:
     # ---------- 解压 ----------
     def _run_7z(self, src, password, out_dir):
         """流式调用 7-Zip，顺便把百分比推给界面。返回 (returncode, 输出文本)。"""
+        # 空密码就是裸 -p（7-Zip 视为空密码）；配合 stdin=DEVNULL 不会卡在输入提示
         cmd = [self.seven, 'x', src, f'-p{password}', f'-o{out_dir}', '-y', '-bsp1']
         try:
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.STDOUT, bufsize=0)
+                                    stderr=subprocess.STDOUT,
+                                    stdin=subprocess.DEVNULL, bufsize=0)
         except FileNotFoundError:
             return None, f"严重错误: 无法找到 7-Zip 程序: {self.seven}"
         except Exception as e:
@@ -769,10 +846,18 @@ class Engine:
                 probe = [self.seven, 'l', f_path, f'-p{password}']
                 try:
                     result = subprocess.run(probe, capture_output=True, text=True,
-                                            encoding='utf-8', errors='ignore')
+                                            encoding='utf-8', errors='ignore',
+                                            stdin=subprocess.DEVNULL, timeout=60)
+                    combined = (result.stdout or '') + (result.stderr or '')
                     if "Type =" in result.stdout:
                         new_tasks.append({'type': 'single', 'path': f_path})
                         self.reporter.debug(f"识别出独立压缩包任务: {os.path.basename(f_path)}")
+                        break
+                    # 加密压缩包在没密码时列不出内容，但会报 wrong password —— 也要当任务
+                    if re.search(r'wrong password|encrypted', combined, re.IGNORECASE):
+                        new_tasks.append({'type': 'single', 'path': f_path, 'encrypted': True})
+                        self.reporter.debug(
+                            f"识别出加密压缩包任务: {os.path.basename(f_path)}")
                         break
                 except Exception:
                     continue
@@ -872,7 +957,36 @@ class Engine:
                 if status != 'success':
                     if status != 'cancelled':
                         self.reporter.error(message)
-                    if members and not self._cancelled():
+
+                    # ① 深扫描：伪装包里压缩数据可能在很后面（如视频伪装包）
+                    if not self._cancelled():
+                        found = find_embedded_archive(src)
+                        if found:
+                            off, kind = found
+                            self.reporter.stage("深扫描伪装包")
+                            self.reporter.info(
+                                f"在 '{os.path.basename(file_path)}' 第 "
+                                f"{off / 1048576:.1f} MB 处发现 {kind} 压缩数据，正在截取…")
+                            carve_dir = tempfile.mkdtemp(prefix='unzip_carve_', dir=src_dir)
+                            carved = os.path.join(carve_dir, f'carved.{kind}')
+                            n = carve_from(src, off, carved)
+                            if n > 0:
+                                self.reporter.rename(
+                                    os.path.basename(file_path),
+                                    f"第{off / 1048576:.1f}MB起的{kind}数据", '伪装包截取')
+                                self.clear_dir(staging)
+                                status, message, _pc, raw3 = self.attempt_decompression(
+                                    carved, staging)
+                                if status == 'success':
+                                    self.reporter.success(
+                                        f"伪装包截取成功：从 {off / 1048576:.1f} MB 处解出内容")
+                                first_raw = raw3 if status != 'success' else first_raw
+                            try:
+                                shutil.rmtree(carve_dir, ignore_errors=True)
+                            except Exception:
+                                pass
+
+                    if status != 'success' and members and not self._cancelled():
                         self.reporter.stage("分卷拼合")
                         self.reporter.info(f"单文件解压失败，检测到分卷集合（共 {len(members)} 卷），尝试拼合：")
                         shadow_base = sanitize_base(os.path.splitext(os.path.basename(src))[0])

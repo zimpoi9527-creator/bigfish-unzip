@@ -90,8 +90,8 @@ def select_password_from_library(app_dir):
 
 def main():
     print("=" * 60)
-    print(" 大肥鱼解压 v1.2.1 - 多层/加密/伪装压缩包一键解压工具")
-    print(" 任意后缀识别 · 分卷智能拼合 · 二级嵌套 · 失败原因报告")
+    print(" 大肥鱼解压 v1.2.2 - 多层/加密/伪装压缩包一键解压工具")
+    print(" 任意后缀识别 · 分卷智能拼合 · 深度扫描伪装包 · 二级嵌套 · 失败原因报告")
     print("=" * 60)
     if len(sys.argv) < 2:
         print("[ERROR] 使用方法: 请将一个或多个文件/文件夹拖拽到本程序的 .bat 启动脚本上。")
