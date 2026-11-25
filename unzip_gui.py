@@ -367,11 +367,13 @@ class App:
     # ------------------------------------------------------------- 投放区
     def _draw_drop_area(self):
         x0, y0, x1, y1 = DROP
-        cx = x1 - 86
-        self.canvas.create_text(cx, y0 + 224, text="拖到这里", font=(F, 16, "bold"),
-                                fill="#0f3a5c", tags="drop")
-        self.canvas.create_text(cx, y0 + 258, text="支持任意后缀 · 伪装包 · 分卷",
-                                font=FONT_SM, fill="#2c5d80", tags="drop")
+        cx = x0 + 268
+        self.canvas.create_text(cx, y0 + 113, text="拖到这里", font=(F, 16, "bold"),
+                                fill="#0b3050", tags="drop")
+        self.canvas.create_text(cx, y0 + 147, text="文件 / 文件夹", font=(F, 9),
+                                fill="#1b4260", tags="drop")
+        self.canvas.create_text(cx, y0 + 167, text="任意后缀 · 分卷 · 加密包",
+                                font=(F, 9), fill="#2c5570", tags="drop")
 
     def _draw_drop_hint(self, hover):
         self.canvas.delete("drophint")

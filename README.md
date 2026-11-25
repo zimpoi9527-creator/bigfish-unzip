@@ -1,4 +1,4 @@
-# 碧蓝解压（Blue Unzip）
+# 大肥鱼解压（Blue Unzip）
 
 > 多层伪装压缩包一键解压工具 · Windows 图形界面
 > 把「改成任意后缀的压缩包」「改名过的分卷包」拖进来，一键解到最内层。
@@ -24,8 +24,8 @@
 
 ## 快速开始
 
-1. 下载 Release 里的 `碧蓝解压_vX.X.zip`，解压到任意目录（**整个文件夹一起用**，别只拿 exe）。
-2. 双击 `碧蓝解压.exe`。
+1. 下载 Release 里的 `大肥鱼解压_vX.X.zip`，解压到任意目录（**整个文件夹一起用**，别只拿 exe）。
+2. 双击 `大肥鱼解压.exe`。
 3. 把文件或文件夹拖到左侧区域即可。
 
 > 内置 `7z/` 是解压引擎，`assets/` 是主题素材与字体，缺一不可。
@@ -40,7 +40,7 @@
 ## 命令行版
 
 ```bat
-碧蓝解压-命令行.exe [选项] 文件或文件夹 [更多路径…]
+大肥鱼解压-命令行.exe [选项] 文件或文件夹 [更多路径…]
 
   --out DIR        解压到指定目录
   --no-separate    不再套一层同名文件夹
@@ -58,7 +58,7 @@ py unzip_gui.py
 打包（需要 PyInstaller）：
 
 ```bat
-py -m PyInstaller --onefile --windowed --name 碧蓝解压 ^
+py -m PyInstaller --onefile --windowed --name 大肥鱼解压 ^
   --icon assets/icon.ico --add-data "assets;assets" ^
   --collect-all tkinterdnd2 --collect-submodules PIL unzip_gui.py
 ```
