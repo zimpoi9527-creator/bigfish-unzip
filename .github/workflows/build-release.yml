@@ -1,0 +1,95 @@
+name: build-release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      version:
+        description: '版本号，例如 v1.2（仅标注用）'
+        required: false
+        default: 'dev'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: 安装依赖
+        run: |
+          python -m pip install --upgrade pip
+          pip install pillow tkinterdnd2 pyinstaller
+
+      - name: 编译 exe
+        run: >
+          pyinstaller --noconfirm --onefile --windowed
+          --name BigFishUnzip
+          --icon assets/icon.ico
+          --add-data "assets;assets"
+          --collect-all tkinterdnd2
+          --collect-submodules PIL
+          unzip_gui.py
+
+      - name: 组装发布目录（含内置 7z / 素材 / 文档）
+        shell: pwsh
+        run: |
+          $pkg = "package\大肥鱼解压"
+          New-Item -ItemType Directory -Force -Path $pkg | Out-Null
+          Copy-Item "dist\BigFishUnzip.exe" "$pkg\大肥鱼解压.exe"
+          Copy-Item -Recurse "assets" "$pkg\assets"
+          Copy-Item "使用说明.txt" "$pkg\使用说明.txt"
+          if (Test-Path "软件介绍.png") { Copy-Item "软件介绍.png" "$pkg\软件介绍.png" }
+          if (Test-Path "拖到这里解压.bat") { Copy-Item "拖到这里解压.bat" "$pkg\拖到这里解压.bat" }
+          New-Item -ItemType Directory -Force -Path "$pkg\passwords" | Out-Null
+          Set-Content -Path "$pkg\passwords\0_temp.txt" -Value "" -NoNewline
+          Set-Content -Path "$pkg\passwords\1_all.txt" -Value "" -NoNewline
+          # 运行环境自带 7-Zip，复制引擎进包
+          $z = "C:\Program Files\7-Zip"
+          if (Test-Path "$z\7z.exe") {
+            New-Item -ItemType Directory -Force -Path "$pkg\7z" | Out-Null
+            Copy-Item "$z\7z.exe","$z\7z.dll" "$pkg\7z\"
+            if (Test-Path "$z\License.txt") { Copy-Item "$z\License.txt" "$pkg\7z\" }
+          } else {
+            Write-Error "未找到 7-Zip，发布包会缺少解压引擎"
+          }
+          Get-ChildItem -Recurse $pkg | Select-Object FullName, Length | Format-Table
+
+      - name: 打包 zip
+        shell: pwsh
+        run: |
+          $ver = "${{ github.ref_name }}"
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") { $ver = "${{ inputs.version }}" }
+          $out = "BigFishUnzip_$ver.zip"
+          Compress-Archive -Path "package\大肥鱼解压\*" -DestinationPath $out -CompressionLevel Optimal
+          Write-Output ("产物: {0}  {1:N1} MB" -f $out, ((Get-Item $out).Length/1MB))
+          "OUT=$out" | Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+
+      - name: 上传构建产物
+        uses: actions/upload-artifact@v4
+        with:
+          name: BigFishUnzip-package
+          path: ${{ env.OUT }}
+          retention-days: 14
+
+      - name: 附加到 Release（打 tag 时）
+        if: startsWith(github.ref, 'refs/tags/')
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $exists = gh release view $tag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            gh release create $tag --title "大肥鱼解压 $tag" --notes "自动构建产物，详见 README。"
+          }
+          gh release upload $tag $env:OUT --clobber
