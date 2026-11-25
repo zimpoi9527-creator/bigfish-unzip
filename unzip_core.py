@@ -514,6 +514,47 @@ def carve_from(path, offset, dest):
     return written
 
 
+
+# --------------------------------------------------------------------------
+# WinRAR 兜底：少数包 7-Zip 打不开但 WinRAR 可以（新版 RAR 特性、特殊损坏、
+# 旧版 ANSI 密码等）。装了 WinRAR 就调用它的 UnRAR.exe 再试一次。
+# --------------------------------------------------------------------------
+def find_unrar():
+    """定位 WinRAR 自带的 UnRAR.exe，找不到返回 None。"""
+    cands = []
+    try:
+        import winreg
+        for root, key in ((winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\WinRAR'),
+                          (winreg.HKEY_LOCAL_MACHINE, r'SOFTWARE\WOW6432Node\WinRAR')):
+            try:
+                with winreg.OpenKey(root, key) as k:
+                    for value in ('exe64', 'exe32'):
+                        try:
+                            exe, _ = winreg.QueryValueEx(k, value)
+                        except OSError:
+                            continue
+                        if exe:
+                            cands.append(os.path.join(os.path.dirname(exe), 'UnRAR.exe'))
+            except OSError:
+                pass
+    except Exception:
+        pass
+    for base in (os.environ.get('ProgramFiles', r'C:\Program Files'),
+                 os.environ.get('ProgramFiles(x86)', r'C:\Program Files (x86)')):
+        cands.append(os.path.join(base, 'WinRAR', 'UnRAR.exe'))
+    path_dirs = os.environ.get('PATH', '').split(os.pathsep)
+    for d in path_dirs:
+        if d:
+            cands.append(os.path.join(d, 'UnRAR.exe'))
+    for c in cands:
+        try:
+            if c and os.path.isfile(c):
+                return c
+        except OSError:
+            continue
+    return None
+
+
 # --------------------------------------------------------------------------
 # 回调基类
 # --------------------------------------------------------------------------
@@ -561,6 +602,7 @@ class Engine:
                  recursive=True):
         self.passwords = passwords or ['']
         self.seven = seven_zip
+        self.unrar = find_unrar()          # 装了 WinRAR 就用它的引擎兜底
         self.app_dir = app_dir
         self.reporter = reporter or Reporter()
         self.cancel = cancel_event
@@ -707,6 +749,45 @@ class Engine:
                     pass
         return proc.returncode, b''.join(chunks).decode('utf-8', 'ignore')
 
+    @staticmethod
+    def _dir_has_files(path):
+        try:
+            for _root, _dirs, files in os.walk(path):
+                if files:
+                    return True
+        except OSError:
+            pass
+        return False
+
+    def _run_unrar(self, src, password, out_dir):
+        """用 WinRAR 的 UnRAR.exe 解压，返回 (ok, output_text)。"""
+        unrar = self.unrar
+        if not unrar:
+            return False, 'UnRAR 不可用'
+        os.makedirs(out_dir, exist_ok=True)
+        collected = []
+        for keep_broken in (False, True):
+            # UnRAR 里裸 -p 表示“提示输入密码”，空密码要用 -p-
+            pw_arg = f'-p{password}' if password else '-p-'
+            cmd = [unrar, 'x', pw_arg, '-y', '-o+']
+            if keep_broken:
+                cmd.append('-kb')
+            cmd += [src, out_dir + os.sep]
+            try:
+                proc = subprocess.run(cmd, capture_output=True,
+                                      stdin=subprocess.DEVNULL, timeout=1800)
+            except subprocess.TimeoutExpired:
+                return False, 'UnRAR 超时'
+            except OSError as exc:
+                return False, f'UnRAR 启动失败: {exc}'
+            text = (proc.stdout + proc.stderr).decode('gbk', errors='replace')
+            collected.append(text)
+            if proc.returncode in (0, 1) and self._dir_has_files(out_dir):
+                return True, text
+            if proc.returncode in (10, 11):
+                break
+        return False, '\n'.join(collected)
+
     def attempt_decompression(self, file_to_decompress, output_dir):
         """尝试解压。返回 (status, message, password, raw_output)。"""
         passwords_to_try = [""] + [p for p in self.passwords if p]
@@ -723,8 +804,21 @@ class Engine:
                         f"密码正确，成功解压: {os.path.basename(file_to_decompress)}",
                         password, out)
             last_output = out
-            low = out.lower()
-            if "password" in low:
+
+            # 7-Zip 打不开时，若装了 WinRAR 就用它的 UnRAR 引擎再试一次
+            if self.unrar and not self._cancelled():
+                ok, uout = self._run_unrar(file_to_decompress, password, output_dir)
+                if ok:
+                    self.save_password(password)
+                    return ('success',
+                            f"7-Zip 未成功，已改用 WinRAR 引擎解压: "
+                            f"{os.path.basename(file_to_decompress)}",
+                            password, out + '\n' + uout)
+                last_output = out + '\n' + uout
+
+            # 用两个引擎的输出共同判断是否是密码问题
+            low = last_output.lower()
+            if "password" in low or "密码" in low:
                 continue
             break
 
