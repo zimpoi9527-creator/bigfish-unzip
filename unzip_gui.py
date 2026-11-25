@@ -18,7 +18,7 @@ try:
 except Exception:
     DND_OK = False
 
-APP_VERSION = "1.2.3"
+APP_VERSION = "1.2.4"
 APP_TITLE = f"大肥鱼解压 v{APP_VERSION} · 多层伪装包一键解压"
 
 # 布局（和 make_assets.py 的 layout.json 保持一致）
@@ -279,7 +279,7 @@ class App:
         self.rename_rows = []
         self._build_ui()
         if DND_OK:
-            self._log("拖拽已启用：把文件或文件夹拖到左侧壁纸上即可开始。", "info")
+            self._log("拖拽已启用：把文件或文件夹拖进左侧虚线框，确认设置后点「开始解压」。", "info")
         else:
             self._log("拖拽组件不可用：请点击「选择文件 / 选择文件夹」。", "warn")
         self.root.after(80, self._drain_queue)
@@ -468,9 +468,10 @@ class App:
     def _queue_hint(self):
         self.canvas.delete("queuehint")
         if self.pending:
-            self.canvas.create_text(DROP[0] + 60, DROP[3] - 34,
-                                    text=f"已排队 {len(self.pending)} 项",
-                                    font=(F, 10, "bold"), fill=PINK, tags="queuehint")
+            self.canvas.create_text((DROP[0] + DROP[2]) // 2, DROP[3] - 26,
+                                    text=f"已排队 {len(self.pending)} 项 · 点「开始解压」",
+                                    font=(F, 9, "bold"), fill=ACCENT_DARK,
+                                    anchor="center", tags="queuehint")
 
     # ------------------------------------------------------------ 左面板
     def _draw_left_panel(self):
@@ -560,6 +561,32 @@ class App:
             fg = "#ffffff" if b['primary'] else INK
         self.canvas.itemconfigure(b['poly'], fill=fill, outline=line)
         self.canvas.itemconfigure(b['txt'], fill=fg)
+
+    def _flash_start_button(self, times=4):
+        """有待处理文件时让「开始解压」闪一下，提示用户确认设置后再点。"""
+        tag = getattr(self, 'btn_start', None)
+        if not tag or tag not in self._buttons:
+            return
+        b = self._buttons[tag]
+        if not b['enabled']:
+            return
+        light, dark = "#7fc2f0", ACCENT_DARK
+
+        def step(i):
+            if i >= times * 2:
+                try:
+                    self._paint_button(tag)
+                except Exception:
+                    pass
+                return
+            try:
+                self.canvas.itemconfigure(b['poly'],
+                                          fill=light if i % 2 == 0 else ACCENT,
+                                          outline=dark)
+                self.root.after(170, lambda: step(i + 1))
+            except Exception:
+                pass
+        step(0)
 
     def _button_hover(self, tag, on):
         b = self._buttons[tag]
@@ -754,8 +781,16 @@ class App:
         self.pending.extend(paths)
         self._queue_hint()
         self._log(f"已加入 {len(paths)} 项，共 {len(self.pending)} 项待处理。", "info")
-        if not self.running:
-            self.start()
+        # 不自动开始：拖入只是排队，让用户先确认下面这些设置
+        self._log("请先确认「解压密码 / 解压到 / 三个开关」，再点左下角的「开始解压」。",
+                  "warn")
+        try:
+            self.canvas.itemconfigure(self.task_text, text=f"待处理 {len(self.pending)} 项")
+            self.canvas.itemconfigure(self.stage_text, text="阶段：等待你确认设置")
+            self._set_progress(0)
+        except Exception:
+            pass
+        self._flash_start_button()
 
     def _clear(self):
         if self.running:
